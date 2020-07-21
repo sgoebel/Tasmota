@@ -42,7 +42,7 @@ typedef struct Z_XYZ_Var {    // Holds values for vairables X, Y and Z
 
 ZF(AddGroup) ZF(ViewGroup) ZF(GetGroup) ZF(GetAllGroups) ZF(RemoveGroup) ZF(RemoveAllGroups)
 ZF(AddScene) ZF(ViewScene) ZF(RemoveScene) ZF(RemoveAllScenes) ZF(RecallScene) ZF(StoreScene) ZF(GetSceneMembership)
-//ZF(Power) ZF(Dimmer) 
+//ZF(Power) ZF(Dimmer)
 ZF(DimmerUp) ZF(DimmerDown) ZF(DimmerStop)
 ZF(ResetAlarm) ZF(ResetAllAlarms)
 //ZF(Hue) ZF(Sat) ZF(CT)
@@ -52,7 +52,7 @@ ZF(ShutterOpen) ZF(ShutterClose) ZF(ShutterStop) ZF(ShutterLift) ZF(ShutterTilt)
 ZF(DimmerMove) ZF(DimmerStep) ZF(DimmerStepUp) ZF(DimmerStepDown)
 ZF(HueMove) ZF(HueStep) ZF(HueStepUp) ZF(HueStepDown) ZF(SatMove) ZF(SatStep) ZF(ColorMove) ZF(ColorStep)
 ZF(ColorTempMoveUp) ZF(ColorTempMoveDown) ZF(ColorTempMoveStop) ZF(ColorTempMove)
-ZF(ColorTempStep) ZF(ColorTempStepUp) ZF(ColorTempStepDown) 
+ZF(ColorTempStep) ZF(ColorTempStepUp) ZF(ColorTempStepDown)
 ZF(ArrowClick) ZF(ArrowHold) ZF(ArrowRelease) ZF(ZoneStatusChange)
 
 ZF(xxxx00) ZF(xxxx) ZF(01xxxx) ZF(03xxxx) ZF(00) ZF(01) ZF() ZF(xxxxyy) ZF(00190200) ZF(01190200) ZF(xxyyyy) ZF(xx)
@@ -189,6 +189,7 @@ int32_t Z_ReadAttrCallback(uint16_t shortaddr, uint16_t groupaddr, uint16_t clus
     }
     ZigbeeZCLSend_Raw(shortaddr, groupaddr, cluster, endpoint, ZCL_READ_ATTRIBUTES, false, 0, attrs, attrs_len, true /* we do want a response */, zigbee_devices.getNextSeqNumber(shortaddr));
   }
+  return 0;  // Fix GCC 10.1 warning
 }
 
 
@@ -197,6 +198,7 @@ int32_t Z_Unreachable(uint16_t shortaddr, uint16_t groupaddr, uint16_t cluster, 
   if (BAD_SHORTADDR != shortaddr) {
     zigbee_devices.setReachable(shortaddr, false);     // mark device as reachable
   }
+  return 0;  // Fix GCC 10.1 warning
 }
 
 // set a timer to read back the value in the future
@@ -339,7 +341,7 @@ void sendHueUpdate(uint16_t shortaddr, uint16_t groupaddr, uint16_t cluster, uin
 
 
 // Parse a cluster specific command, and try to convert into human readable
-void convertClusterSpecific(JsonObject& json, uint16_t cluster, uint8_t cmd, bool direction, const SBuffer &payload) {
+void convertClusterSpecific(JsonObject& json, uint16_t cluster, uint8_t cmd, bool direction, uint16_t shortaddr, uint8_t srcendpoint, const SBuffer &payload) {
   size_t hex_char_len = payload.len()*2+2;
   char *hex_char = (char*) malloc(hex_char_len);
   if (!hex_char) { return; }
@@ -412,11 +414,11 @@ void convertClusterSpecific(JsonObject& json, uint16_t cluster, uint8_t cmd, boo
 
   if (command_name) {
     // Now try to transform into a human readable format
+    String command_name2 = String(command_name);
     // if (direction & 0x80) then specific transform
     if (conv_direction & 0x80) {
       // TODO need to create a specific command
       // IAS
-      String command_name2 = String(command_name);
       if ((cluster == 0x0500) && (cmd == 0x00)) {
         // "ZoneStatusChange"
         json[command_name] = xyz.x;
@@ -463,11 +465,21 @@ void convertClusterSpecific(JsonObject& json, uint16_t cluster, uint8_t cmd, boo
         String scene_payload = json[attrid_str];
         json[F("ScenePayload")] = scene_payload.substring(8); // remove first 8 characters
       }
-    } else {
+    } else {  // general case
+      bool extended_command = false;    // do we send command with endpoint suffix
+      // if SO101 and multiple endpoints, append endpoint number
+      if (Settings.flag4.zb_index_ep) {
+        if (zigbee_devices.countEndpoints(shortaddr) > 0) {
+          command_name2 += srcendpoint;
+          extended_command = true;
+        }
+      }
       if (0 == xyz.x_type) {
         json[command_name] = true;    // no parameter
+        if (extended_command) { json[command_name2] = true; }
       } else if (0 == xyz.y_type) {
         json[command_name] = xyz.x;       // 1 parameter
+        if (extended_command) { json[command_name2] = xyz.x; }
       } else {
         // multiple answers, create an array
         JsonArray &arr = json.createNestedArray(command_name);
@@ -475,6 +487,14 @@ void convertClusterSpecific(JsonObject& json, uint16_t cluster, uint8_t cmd, boo
         arr.add(xyz.y);
         if (xyz.z_type) {
           arr.add(xyz.z);
+        }
+        if (extended_command) {
+          JsonArray &arr = json.createNestedArray(command_name2);
+          arr.add(xyz.x);
+          arr.add(xyz.y);
+          if (xyz.z_type) {
+            arr.add(xyz.z);
+          }
         }
       }
     }
